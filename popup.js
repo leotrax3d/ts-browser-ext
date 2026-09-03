@@ -1,11 +1,5 @@
 var lastStatus;
 
-function browseToURL() {
-  if (lastStatus && lastStatus.browseToURL) {
-    chrome.tabs.create({ url: lastStatus.browseToURL });
-  }
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   const toggleSlider = document.getElementById("toggleSlider");
   const slider = document.querySelector(".slider");
@@ -33,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateStatus(status) {
     isLoading = false;
+    lastStatus = status;
     hasReceivedInitialState = true;
     if (status.error) {
       if (status.error === "State: Stopped") {
@@ -85,6 +80,24 @@ document.addEventListener("DOMContentLoaded", () => {
       console.log("Received status update:", msg.status);
       updateStatus(msg.status);
     }
+  });
+
+  // Links in the status area open in a tab; navigating the popup itself would
+  // just replace the extension UI. "#login" stands in for the login URL, which
+  // is only known once a status arrives.
+  stateDisplay.addEventListener("click", (e) => {
+    const link = e.target.closest("a");
+    if (!link) {
+      return;
+    }
+    const href = link.getAttribute("href");
+    const url =
+      href === "#login" ? lastStatus && lastStatus.browseToURL : href;
+    if (!url || !/^https?:\/\//.test(url)) {
+      return;
+    }
+    e.preventDefault();
+    chrome.tabs.create({ url });
   });
 
   toggleSlider.addEventListener("change", () => {

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        if: matrix.goos == 'linux'
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "these files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: build
+        run: go build ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+
+      - name: vet
+        run: go vet ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+
+      # The tests are pure Go, so they only need to run on the host platform.
+      - name: test
+        if: matrix.goos == 'linux'
+        run: go test ./...
+
+  js:
+    name: js syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: check
+        # node --check only looks at its first argument, so loop.
+        run: |
+          for f in background.js popup.js firefox/background.js firefox/popup.js; do
+            echo "checking $f"
+            node --check "$f"
+          done
