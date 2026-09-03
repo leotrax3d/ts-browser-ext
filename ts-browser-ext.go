@@ -249,6 +249,16 @@ func uninstall() error {
 		if err := os.Remove(targetJSON); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+		// Leftovers from [replaceBinary]: a .old that was still running when
+		// an upgrade displaced it, or a .new from a write that failed partway.
+		// Neither is running now, in the usual case where the browser has
+		// released the backend before an uninstall, but if one still is, say
+		// so rather than reporting a clean uninstall.
+		for _, leftover := range []string{targetBin + ".old", targetBin + ".new"} {
+			if err := os.Remove(leftover); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -306,7 +316,7 @@ func installFrom(exe, installArg string) error {
 		return err
 	}
 	targetBin := filepath.Join(targetDir, targetBinName())
-	if err := os.WriteFile(targetBin, binary, 0755); err != nil {
+	if err := replaceBinary(targetBin, binary); err != nil {
 		return err
 	}
 	log.SetFlags(0)
@@ -344,6 +354,51 @@ func installFrom(exe, installArg string) error {
 	log.Printf("wrote registration to %v", targetJSON)
 
 	return registerHost(browserByte, targetJSON)
+}
+
+// replaceBinary installs content as the executable at path, replacing whatever
+// is there.
+//
+// It writes alongside and renames into place rather than writing over the
+// target. Windows refuses to open a running executable for writing, so a
+// straight write fails for the whole time the browser has the backend
+// started, which is exactly when someone re-runs --install to upgrade. It
+// does allow renaming a running executable, since executables are mapped
+// with FILE_SHARE_DELETE, so moving the old one aside clears the way.
+//
+// Renaming into place also removes the window in which a partially written
+// file sits at the path the browser is about to launch.
+func replaceBinary(path string, content []byte) error {
+	newPath := path + ".new"
+	if err := os.WriteFile(newPath, content, 0755); err != nil {
+		return err
+	}
+	defer os.Remove(newPath) // no-op once the rename below succeeds
+
+	if err := os.Rename(newPath, path); err == nil {
+		// Nothing was holding the old binary. Clear out any leftover from a
+		// previous upgrade that could not delete it at the time.
+		os.Remove(path + ".old")
+		return nil
+	}
+
+	// Busy, or otherwise not replaceable in one step: move the old one out of
+	// the way and try again.
+	oldPath := path + ".old"
+	if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %v: %w", oldPath, err)
+	}
+	if err := os.Rename(path, oldPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("moving %v aside: %w", path, err)
+	}
+	if err := os.Rename(newPath, path); err != nil {
+		return fmt.Errorf("installing %v: %w", path, err)
+	}
+
+	// The displaced binary is still running, so this usually fails; the next
+	// install removes it. Nothing depends on it being gone now.
+	os.Remove(oldPath)
+	return nil
 }
 
 // firefoxExtensionID is the add-on ID from firefox/manifest.json. Unlike
