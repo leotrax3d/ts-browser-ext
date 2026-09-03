@@ -210,17 +210,37 @@ func uninstall() error {
 	return nil
 }
 
-func install(installArg string) error {
-	browserByte, extension := installArg[0:1], installArg[1:]
+// chromeExtensionIDRE matches a Chrome extension ID: 32 letters from a-p,
+// though we accept any lowercase alphanumerics.
+var chromeExtensionIDRE = regexp.MustCompile(`^[a-z0-9]{32}$`)
+
+// parseInstallArg splits the --install value into its browser byte and, for
+// Chrome, the extension ID. Firefox keys on a fixed add-on ID instead, so it
+// takes no ID.
+func parseInstallArg(installArg string) (browserByte, extension string, err error) {
+	if installArg == "" {
+		return "", "", errors.New("empty --install value")
+	}
+	browserByte, extension = installArg[0:1], installArg[1:]
 	switch browserByte {
 	case "C":
-		extensionRE := regexp.MustCompile(`^[a-z0-9]{32}$`)
-		if !extensionRE.MatchString(extension) {
-			return fmt.Errorf("invalid extension ID %q", extension)
+		if !chromeExtensionIDRE.MatchString(extension) {
+			return "", "", fmt.Errorf("invalid extension ID %q", extension)
 		}
 	case "F":
+		if extension != "" {
+			return "", "", fmt.Errorf("unexpected extension ID %q after Firefox prefix", extension)
+		}
 	default:
-		return fmt.Errorf("unknown browser prefix byte %q", browserByte)
+		return "", "", fmt.Errorf("unknown browser prefix byte %q", browserByte)
+	}
+	return browserByte, extension, nil
+}
+
+func install(installArg string) error {
+	browserByte, extension, err := parseInstallArg(installArg)
+	if err != nil {
+		return err
 	}
 
 	exe, err := os.Executable()
@@ -301,7 +321,7 @@ type host struct {
 
 	wmu sync.Mutex // guards writing to w
 
-	lenBuf [4]byte // owned by readMessages
+	lenBuf [4]byte // owned by readMessage
 
 	mu              sync.Mutex
 	watchDead       bool
@@ -418,18 +438,8 @@ func (h *host) handleInit(msg *request) (ret error) {
 	h.ctx, h.cancelCtx = context.WithCancel(context.Background())
 
 	id := msg.InitID
-	if len(id) == 0 {
-		return fmt.Errorf("missing initID")
-	}
-	if len(id) > 60 {
-		return fmt.Errorf("initID too long")
-	}
-	for i := range len(id) {
-		b := id[i]
-		if b == '-' || (b >= 'a' && b <= 'f') || (b >= '0' && b <= '9') {
-			continue
-		}
-		return errors.New("invalid initID character")
+	if err := validInitID(id); err != nil {
+		return err
 	}
 
 	if h.ts.Sys() != nil {
@@ -472,6 +482,25 @@ func (h *host) handleInit(msg *request) (ret error) {
 		return fmt.Errorf("NewServer: %w", err)
 	}
 
+	return nil
+}
+
+// validInitID reports whether id is safe to use as a directory name, since it
+// comes from JavaScript and ends up in a filesystem path. See [request.InitID].
+func validInitID(id string) error {
+	if len(id) == 0 {
+		return errors.New("missing initID")
+	}
+	if len(id) > 60 {
+		return errors.New("initID too long")
+	}
+	for i := range len(id) {
+		b := id[i]
+		if b == '-' || (b >= 'a' && b <= 'f') || (b >= '0' && b <= '9') {
+			continue
+		}
+		return errors.New("invalid initID character")
+	}
 	return nil
 }
 
@@ -520,13 +549,20 @@ func (h *host) send(msg *reply) error {
 		return fmt.Errorf("json encoding of message: %w", err)
 	}
 	h.logf("sent reply: %s", msgb)
+	return h.writeFramed(msgb)
+}
+
+// writeFramed writes msgb with the 4-byte little-endian length prefix the
+// native messaging protocol uses.
+func (h *host) writeFramed(msgb []byte) error {
 	if len(msgb) > maxMsgSize {
 		return fmt.Errorf("message too big (%v)", len(msgb))
 	}
-	binary.LittleEndian.PutUint32(h.lenBuf[:], uint32(len(msgb)))
+	var lenBuf [4]byte
+	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(msgb)))
 	h.wmu.Lock()
 	defer h.wmu.Unlock()
-	if _, err := h.w.Write(h.lenBuf[:]); err != nil {
+	if _, err := h.w.Write(lenBuf[:]); err != nil {
 		return err
 	}
 	if _, err := h.w.Write(msgb); err != nil {
