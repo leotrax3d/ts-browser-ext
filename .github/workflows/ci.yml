@@ -51,6 +51,26 @@ jobs:
 
       # -v so the log names the tests that ran on each OS: the Windows-only
       # registry coverage is selected by build tag and otherwise invisible.
+      # The handshake test drives a browser with --load-extension. Branded
+      # Google Chrome refuses that switch outright ("not allowed in Google
+      # Chrome, ignoring"), so fetch a Chromium build instead; the extension
+      # and native messaging behaviour under test is the same. Skipped on
+      # macOS, where the Linux and Windows coverage is enough to not be worth
+      # the runner minutes.
+      - name: fetch chromium for the handshake test
+        if: matrix.os != 'macos-latest'
+        shell: bash
+        run: |
+          out=$(npx --yes @puppeteer/browsers install chromium@latest)
+          echo "$out"
+          # The last line is "chromium@<revision> <path>".
+          path=$(echo "$out" | tail -1 | cut -d' ' -f2-)
+          if [ ! -e "$path" ]; then
+            echo "could not resolve a chromium binary from: $out"
+            exit 1
+          fi
+          echo "TS_BROWSER_EXT_CHROME=$path" >> "$GITHUB_ENV"
+
       - name: test
         run: go test -v ./...
 

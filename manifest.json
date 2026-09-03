@@ -1,5 +1,7 @@
 {
     "manifest_version": 3,
+    "//key": "Pins the extension ID for unpacked loads. Without it Chrome derives the ID from the install path, so it changes when the directory moves and the native messaging host's allowed_origins stops matching. This is the public half of a throwaway developer key; the Web Store issues the real ID on publication.",
+    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9mNqJ5Sdp0MzbTkKYkL2kQOj4fQqUuD1+Ojdj4+mvazeSDMLp0ULGBup25CDqTdL8y3aw4cBNvK3Tnka4T7J+zuU90jkMfHUbczrwr82iQupNE6tQx1xSz3P3BtApCy4QQh/IryIJp1Etk86B2DoUYvLkT9TUHEsgTBIoQGtbO1Z7t3qsXfcpmmBbvJyOw6COACOZ3Zfm959x3IPBxDFD1f3TGvXLBUabMwwpzK4NRhd56/fuRDN0qYgGMPMxhMSxSJtVWDDD6eBYwJ/G1w3/TUUoHbUW2T1f1Ds1PQSWxN7pDGjeK+vaAwKfBx/n4ei1iDByK2Pf69Ybitg2UNU2wIDAQAB",
     "name": "Tailscale Extension",
     "version": "1.0",
     "description": "A Tailscale client that runs as a browser extension, permitting use of different tailnets in different browser profiles, without affecting the system VPN or networking settings.",

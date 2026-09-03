@@ -55,6 +55,14 @@ native messaging host manifest into the directory the browser scans. On
 Windows they go under `%LOCALAPPDATA%\Tailscale\BrowserExt` and a registry
 key under `HKEY_CURRENT_USER` points the browser at the manifest.
 
+Note for macOS and Linux: the browser resolves that directory *relative to
+its user data directory*, so `--install` only works for a browser running on
+the default profile root. If you start Chrome with your own
+`--user-data-dir`, copy the generated `com.tailscale.browserext.chrome.json`
+into a `NativeMessagingHosts` folder inside that directory as well, or the
+extension will report that the backend is not installed. Windows looks the
+host up in the registry and is unaffected.
+
 ### Chrome
 
 1. Open the Extensions page (`chrome://extensions`) or Extensions... > Manage Extensions...
