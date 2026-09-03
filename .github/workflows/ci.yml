@@ -10,12 +10,15 @@ permissions:
 
 jobs:
   go:
-    name: go (${{ matrix.goos }})
-    runs-on: ubuntu-latest
+    # Run on each real OS rather than cross-compiling: the install path is
+    # platform-specific (directory layout on Linux and macOS, the registry on
+    # Windows) and only executes on the platform it targets.
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin, windows]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,7 +27,8 @@ jobs:
           cache: true
 
       - name: gofmt
-        if: matrix.goos == 'linux'
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
           out=$(gofmt -l .)
           if [ -n "$out" ]; then
@@ -35,17 +39,11 @@ jobs:
 
       - name: build
         run: go build ./...
-        env:
-          GOOS: ${{ matrix.goos }}
 
       - name: vet
         run: go vet ./...
-        env:
-          GOOS: ${{ matrix.goos }}
 
-      # The tests are pure Go, so they only need to run on the host platform.
       - name: test
-        if: matrix.goos == 'linux'
         run: go test ./...
 
   js:

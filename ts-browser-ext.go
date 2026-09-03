@@ -238,15 +238,22 @@ func parseInstallArg(installArg string) (browserByte, extension string, err erro
 }
 
 func install(installArg string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return installFrom(exe, installArg)
+}
+
+// installFrom registers the browser extension, copying the backend binary from
+// exe. install passes the running executable; tests pass a stand-in, so the
+// installation can be exercised without copying a large binary around.
+func installFrom(exe, installArg string) error {
 	browserByte, extension, err := parseInstallArg(installArg)
 	if err != nil {
 		return err
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	targetDir, err := getTargetDir(browserByte)
 	if err != nil {
 		return err
