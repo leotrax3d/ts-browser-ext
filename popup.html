@@ -120,6 +120,29 @@
         background-color: #f5f5f5;
         margin-bottom: 16px;
       }
+
+      /* Commands and file paths the user has to read or copy. #state is
+         nowrap, which would clip them, and they are long enough to need
+         wrapping mid-token. Selecting the whole run on one click saves
+         dragging across a wrapped path. */
+      .detail {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 11px;
+        background-color: #f5f5f5;
+        border-radius: 4px;
+        padding: 6px;
+        margin-top: 6px;
+        user-select: all;
+      }
+
+      .detail-label {
+        white-space: normal;
+        font-size: 12px;
+        color: #555;
+        margin-top: 8px;
+      }
     </style>
   </head>
   <body>
