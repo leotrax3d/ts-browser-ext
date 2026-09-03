@@ -75,33 +75,76 @@ To unregister it again:
 	hostinfo.SetApp("ts-browser-ext")
 
 	h := newHost(os.Stdin, os.Stdout)
+	logPath := setupLogging()
+	h.logf("ts-browser-ext starting, pid %v", os.Getpid())
 
-	// The browser owns our stdout (it's the native messaging channel) and
-	// discards our stderr, so logs are invisible by default. Developers can
-	// point them at a syslog listener (e.g. "localhost:5555") instead.
-	if addr := *syslogFlag; addr != "" {
-		if w, err := dialSyslog(addr); err == nil {
-			log.Printf("syslog dialed")
-			h.logf = func(f string, a ...any) {
-				fmt.Fprintf(w, f, a...)
-			}
-			log.SetOutput(w)
-		} else {
-			log.Printf("syslog: %v", err)
-		}
+	ln, err := h.getProxyListener()
+	if err != nil {
+		// The extension can't do anything without a proxy port, but it can at
+		// least say why rather than reporting the backend as missing.
+		h.logf("could not start proxy: %v", err)
+		h.send(&reply{ProcRunning: &procRunningResult{
+			Pid:     os.Getpid(),
+			Error:   err.Error(),
+			LogPath: logPath,
+		}})
+		os.Exit(1)
 	}
-
-	ln := h.getProxyListener()
 	port := ln.Addr().(*net.TCPAddr).Port
 	h.logf("Proxy listening on localhost:%v", port)
 
 	h.send(&reply{ProcRunning: &procRunningResult{
-		Port: port,
-		Pid:  os.Getpid(),
+		Port:    port,
+		Pid:     os.Getpid(),
+		LogPath: logPath,
 	}})
 	h.logf("Starting readMessages loop")
-	err := h.readMessages()
+	err = h.readMessages()
 	h.logf("readMessage loop ended: %v", err)
+}
+
+const (
+	// maxLogSize is how large the log file may grow before rolling over, and
+	// keepLogs how many rolled-over files are retained beside it.
+	maxLogSize = 2 << 20
+	keepLogs   = 3
+)
+
+// setupLogging sends the standard logger, which is what [host.logf] uses, to a
+// rotating file and, if --syslog was given, to that listener as well. It
+// returns the log file's path, or the empty string if none could be opened.
+//
+// Until this runs, logs go to stderr, which the browser discards.
+func setupLogging() (logPath string) {
+	var sinks []io.Writer
+
+	dir, err := logDirFor()
+	if err != nil {
+		log.Printf("no log directory: %v", err)
+	} else {
+		path := filepath.Join(dir, "backend.log")
+		f, err := newRotatingFile(path, maxLogSize, keepLogs)
+		if err != nil {
+			log.Printf("opening %v: %v", path, err)
+		} else {
+			sinks = append(sinks, f)
+			logPath = path
+		}
+	}
+
+	if addr := *syslogFlag; addr != "" {
+		w, err := dialSyslog(addr)
+		if err != nil {
+			log.Printf("syslog: %v", err)
+		} else {
+			sinks = append(sinks, w)
+		}
+	}
+
+	if len(sinks) > 0 {
+		log.SetOutput(io.MultiWriter(sinks...))
+	}
+	return logPath
 }
 
 // The native messaging host names, as used by both the manifest and the
@@ -341,6 +384,7 @@ type host struct {
 	ws              *web.Server
 	ln              net.Listener
 	wantUp          bool
+	fatalErr        string // non-empty once the proxy has stopped serving
 	// ...
 }
 
@@ -591,35 +635,49 @@ func (h *host) writeFramed(msgb []byte) error {
 	return nil
 }
 
-func (h *host) getProxyListener() net.Listener {
+func (h *host) getProxyListener() (net.Listener, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.getProxyListenerLocked()
 }
 
-func (h *host) getProxyListenerLocked() net.Listener {
+func (h *host) getProxyListenerLocked() (net.Listener, error) {
 	if h.ln != nil {
-		return h.ln
+		return h.ln, nil
 	}
-	var err error
-	h.ln, err = net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		panic(err) // TODO: be more graceful
+		return nil, fmt.Errorf("listening on localhost: %w", err)
 	}
+	h.ln = ln
 	socksListener, httpListener := proxymux.SplitSOCKSAndHTTP(h.ln)
 
 	hs := &http.Server{Handler: h.httpProxyHandler()}
 	go func() {
-		log.Fatalf("HTTP proxy exited: %v", hs.Serve(httpListener))
+		h.proxyDied("HTTP proxy", hs.Serve(httpListener))
 	}()
 	ss := &socks5.Server{
 		Logf:   logger.WithPrefix(h.logf, "socks5: "),
 		Dialer: h.userDial,
 	}
 	go func() {
-		log.Fatalf("SOCKS5 server exited: %v", ss.Serve(socksListener))
+		h.proxyDied("SOCKS5 server", ss.Serve(socksListener))
 	}()
-	return h.ln
+	return h.ln, nil
+}
+
+// proxyDied records that one of the proxy servers stopped serving and tells
+// the extension. Without a working proxy the backend is useless, but killing
+// the process only shows the user a dropped connection, which is
+// indistinguishable from the backend never having been installed.
+func (h *host) proxyDied(what string, err error) {
+	h.logf("%s exited: %v", what, err)
+	h.mu.Lock()
+	if h.fatalErr == "" {
+		h.fatalErr = fmt.Sprintf("%s stopped: %v", what, err)
+	}
+	h.mu.Unlock()
+	h.sendStatus()
 }
 
 func (h *host) userDial(ctx context.Context, netw, addr string) (net.Conn, error) {
@@ -650,6 +708,10 @@ func (h *host) sendStatus() {
 	}
 	if h.watchDead {
 		st.Error = "WatchIPNBus stopped"
+	}
+	// A dead proxy outranks the other errors: nothing works without it.
+	if h.fatalErr != "" {
+		st.Error = h.fatalErr
 	}
 	h.mu.Unlock()
 
@@ -700,6 +762,10 @@ type procRunningResult struct {
 	Port  int    `json:"port"` // HTTP+SOCKS5 localhost proxy port
 	Pid   int    `json:"pid"`
 	Error string `json:"error"`
+
+	// LogPath is where the backend is writing its log file, for the popup to
+	// show the user when something goes wrong. Empty if none could be opened.
+	LogPath string `json:"logPath,omitempty"`
 }
 
 type initResult struct {

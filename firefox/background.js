@@ -93,11 +93,27 @@ function sendPopupStatus() {
   if (deadPort) {
     setPopupIcon("need-install");
     console.log("sendPopupStatus... no nmPort");
+    if (!everConnected) {
+      // Never reached the backend at all, so it isn't registered yet.
+      sendToPopup({
+        installCmd:
+          "go run github.com/tailscale/ts-browser-ext@main --install=" +
+          browserByte() +
+          browser.runtime.id,
+      });
+    } else {
+      // It answered before and is gone now, which is a crash or a failed
+      // upgrade, not a missing installation. Telling the user to reinstall
+      // here would send them down the wrong path.
+      sendToPopup({
+        backendGone: { message: portError || "", logPath: lastLogPath },
+      });
+    }
+    return;
+  }
+  if (backendError) {
     sendToPopup({
-      installCmd:
-        "go run github.com/tailscale/ts-browser-ext@main --install=" +
-        browserByte() +
-        browser.runtime.id,
+      backendError: { message: backendError, logPath: lastLogPath },
     });
     return;
   }
@@ -115,6 +131,13 @@ function sendToPopup(v) {
 let nmPort = null; // even non-null if lacking permission
 let deadPort = true;
 let portError = null;
+
+// everConnected tells "never registered" apart from "was there and stopped".
+// The browser's own disconnect message isn't dependable enough to distinguish
+// them, and the two need opposite advice.
+let everConnected = false;
+let lastLogPath = ""; // where the backend says it is writing its log
+let backendError = ""; // last error the backend reported, if any
 
 connectToNativeHost();
 
@@ -144,10 +167,16 @@ function connectToNativeHost() {
       console.log("connected to native backend");
       deadPort = false;
     }
+    everConnected = true;
     if (message.procRunning) {
+      if (message.procRunning.logPath) {
+        lastLogPath = message.procRunning.logPath;
+      }
       if (message.procRunning.port) {
+        backendError = "";
         setProxy(message.procRunning.port);
       } else if (message.procRunning.error) {
+        backendError = message.procRunning.error;
         console.log(
           "procRunning error from backend: " + message.procRunning.error
         );
@@ -155,6 +184,7 @@ function connectToNativeHost() {
       }
     }
     if (message.init && message.init.error) {
+      backendError = message.init.error;
       console.log("init error from backend: " + message.init.error);
       disableProxy();
     }

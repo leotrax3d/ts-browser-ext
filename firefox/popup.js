@@ -60,20 +60,67 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // showFailure renders a headline plus optional detail lines, and disables
+  // the controls: none of these states can be recovered from in the popup.
+  // It builds nodes rather than markup because the detail text comes from
+  // the backend and the filesystem.
+  function showFailure(headline, detail, logPath) {
+    stateDisplay.textContent = "";
+
+    const h = document.createElement("b");
+    h.textContent = headline;
+    stateDisplay.appendChild(h);
+
+    if (detail) {
+      const d = document.createElement("div");
+      d.className = "detail";
+      d.textContent = detail;
+      stateDisplay.appendChild(d);
+    }
+    if (logPath) {
+      const label = document.createElement("div");
+      label.className = "detail-label";
+      label.textContent = "Backend log:";
+      stateDisplay.appendChild(label);
+
+      const d = document.createElement("div");
+      d.className = "detail";
+      d.textContent = logPath;
+      stateDisplay.appendChild(d);
+    }
+
+    toggleSlider.disabled = true;
+    settingsButton.hidden = true;
+  }
+
   port.onMessage.addListener((msg) => {
     console.log("Received from background:", JSON.stringify(msg));
     if (msg.installCmd) {
       console.log("Received install command");
-      stateDisplay.innerHTML = `<b>Installation needed. Run:</b><pre>${msg.installCmd}</pre>`;
-      toggleSlider.disabled = true;
-      settingsButton.hidden = true;
+      showFailure("Installation needed. Run:", msg.installCmd, "");
+      return;
+    }
+    if (msg.backendGone) {
+      console.log("Backend stopped:", msg.backendGone);
+      showFailure(
+        "The Tailscale backend stopped.",
+        msg.backendGone.message,
+        msg.backendGone.logPath
+      );
+      return;
+    }
+    if (msg.backendError) {
+      console.log("Backend reported an error:", msg.backendError);
+      showFailure(
+        "The Tailscale backend reported an error.",
+        msg.backendError.message,
+        msg.backendError.logPath
+      );
       return;
     }
     if (msg.error) {
       console.log("Error from background:", msg);
-      stateDisplay.textContent = msg.error;
-      toggleSlider.disabled = true;
-      settingsButton.hidden = true;
+      showFailure(msg.error, "", "");
       return;
     }
     // firefox requires that extensions setting proxies have private browsing access
