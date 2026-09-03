@@ -100,6 +100,28 @@ document.addEventListener("DOMContentLoaded", () => {
       showFailure("Installation needed. Run:", msg.installCmd, "");
       return;
     }
+    if (msg.versionMismatch) {
+      console.log("Protocol mismatch:", msg.versionMismatch);
+      const m = msg.versionMismatch;
+      // Whichever side is behind is the one to update, and they are updated
+      // by different means: the extension through the browser, the backend by
+      // re-running the install command.
+      if (m.theirs < m.ours) {
+        showFailure(
+          "The Tailscale backend is out of date. Update it by running:",
+          m.installCmd,
+          m.logPath
+        );
+      } else {
+        showFailure(
+          "This extension is older than the Tailscale backend. Update the " +
+            "extension, or reinstall the backend from a matching version.",
+          "backend " + (m.backendVersion || "unknown"),
+          m.logPath
+        );
+      }
+      return;
+    }
     if (msg.backendGone) {
       console.log("Backend stopped:", msg.backendGone);
       showFailure(

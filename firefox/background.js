@@ -111,6 +111,19 @@ function sendPopupStatus() {
     }
     return;
   }
+  if (versionMismatch) {
+    setPopupIcon("need-install");
+    sendToPopup({
+      versionMismatch: Object.assign({}, versionMismatch, {
+        logPath: lastLogPath,
+        installCmd:
+          "go run github.com/tailscale/ts-browser-ext@main --install=" +
+          browserByte() +
+          browser.runtime.id,
+      }),
+    });
+    return;
+  }
   if (backendError) {
     sendToPopup({
       backendError: { message: backendError, logPath: lastLogPath },
@@ -138,6 +151,14 @@ let portError = null;
 let everConnected = false;
 let lastLogPath = ""; // where the backend says it is writing its log
 let backendError = ""; // last error the backend reported, if any
+let versionMismatch = null; // set when the backend speaks a different protocol
+
+// PROTOCOL_VERSION is the native messaging protocol this extension speaks.
+// The two halves update separately -- this one through the browser's store,
+// the backend by re-running --install -- so they drift apart. Comparing
+// versions turns that into a message the user can act on, rather than
+// commands that quietly do nothing.
+const PROTOCOL_VERSION = 1;
 
 connectToNativeHost();
 
@@ -172,6 +193,29 @@ function connectToNativeHost() {
       if (message.procRunning.logPath) {
         lastLogPath = message.procRunning.logPath;
       }
+
+      // A backend too old to report a version predates this check, so treat a
+      // missing field as version 0 rather than as agreement.
+      const theirs = message.procRunning.protocolVersion || 0;
+      if (theirs !== PROTOCOL_VERSION) {
+        versionMismatch = {
+          theirs: theirs,
+          ours: PROTOCOL_VERSION,
+          backendVersion: message.procRunning.version || "",
+        };
+        console.log(
+          "protocol mismatch: backend speaks " +
+            theirs +
+            ", extension speaks " +
+            PROTOCOL_VERSION
+        );
+        // Don't proxy through a backend whose messages we may misread.
+        disableProxy();
+        sendPopupStatus();
+        return;
+      }
+      versionMismatch = null;
+
       if (message.procRunning.port) {
         backendError = "";
         setProxy(message.procRunning.port);

@@ -36,14 +36,20 @@ As of 2026-09-03, this is **barely just starting to work** and is not
 meant for end users yet. It's barely meant for developers at this
 point.
 
+The table below distinguishes what has been run from what has only been
+built. CI starts a browser with the extension loaded on Linux and Windows
+and checks that the backend is launched and answers, so "starts" means that
+much was observed. Logging in and carrying traffic needs a tailnet and has
+only been done by hand on macOS.
+
 | Browser    | OS | Status |
 | -------- | ------- | ---- |
 | Chrome  | macOS | Works |
 | Chrome  | Linux | Works in theory, untested |
-| Chrome  | Windows | Installs, otherwise untested |
+| Chrome  | Windows | Installs and starts; login untested |
 | Firefox  | macOS | Mostly works |
 | Firefox  | Linux | Mostly works in theory, untested |
-| Firefox  | Windows | Installs, otherwise untested |
+| Firefox  | Windows | Installs; otherwise untested |
 | Safari  | * | not possible; no support for Native Messaging |
 
 ## Developer instructions
