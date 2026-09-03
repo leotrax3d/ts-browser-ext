@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -84,9 +85,11 @@ To unregister it again:
 		// least say why rather than reporting the backend as missing.
 		h.logf("could not start proxy: %v", err)
 		h.send(&reply{ProcRunning: &procRunningResult{
-			Pid:     os.Getpid(),
-			Error:   err.Error(),
-			LogPath: logPath,
+			Pid:             os.Getpid(),
+			Error:           err.Error(),
+			LogPath:         logPath,
+			ProtocolVersion: protocolVersion,
+			Version:         backendVersion(),
 		}})
 		os.Exit(1)
 	}
@@ -94,9 +97,11 @@ To unregister it again:
 	h.logf("Proxy listening on localhost:%v", port)
 
 	h.send(&reply{ProcRunning: &procRunningResult{
-		Port:    port,
-		Pid:     os.Getpid(),
-		LogPath: logPath,
+		Port:            port,
+		Pid:             os.Getpid(),
+		LogPath:         logPath,
+		ProtocolVersion: protocolVersion,
+		Version:         backendVersion(),
 	}})
 	h.logf("Starting readMessages loop")
 	err = h.readMessages()
@@ -109,6 +114,50 @@ const (
 	maxLogSize = 2 << 20
 	keepLogs   = 3
 )
+
+// protocolVersion is the version of the native messaging protocol this backend
+// speaks, reported to the extension on connect so it can compare.
+//
+// The two halves are updated separately: the extension through the browser's
+// store, the backend by re-running --install. They drift apart, and without
+// this the mismatch surfaces as commands that quietly do nothing rather than
+// as something the user can act on.
+//
+// Bump it when a change would leave an older peer misreading a message.
+const protocolVersion = 1
+
+// backendVersion describes this build, for display and for bug reports. It
+// deliberately has no part in the version check: what matters there is whether
+// the two sides speak the same protocol, not which build is newer.
+func backendVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	var revision, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				modified = "-dirty"
+			}
+		}
+	}
+	if revision == "" {
+		// Built without VCS information, as "go build" does from a module
+		// cache; the module version is the best available.
+		if v := info.Main.Version; v != "" {
+			return v
+		}
+		return "unknown"
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	return revision + modified
+}
 
 // setupLogging sends the standard logger, which is what [host.logf] uses, to a
 // rotating file and, if --syslog was given, to that listener as well. It
@@ -821,6 +870,14 @@ type procRunningResult struct {
 	// LogPath is where the backend is writing its log file, for the popup to
 	// show the user when something goes wrong. Empty if none could be opened.
 	LogPath string `json:"logPath,omitempty"`
+
+	// ProtocolVersion is [protocolVersion], for the extension to compare
+	// against its own.
+	ProtocolVersion int `json:"protocolVersion"`
+
+	// Version describes this build, for the popup and for bug reports. It is
+	// not what the version check uses.
+	Version string `json:"version,omitempty"`
 }
 
 type initResult struct {
