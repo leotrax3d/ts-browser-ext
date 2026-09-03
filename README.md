@@ -32,7 +32,7 @@ Internet as normal.
 
 ## Status
 
-As of 2025-02-25, this is **barely just starting to work** and is not
+As of 2026-09-03, this is **barely just starting to work** and is not
 meant for end users yet. It's barely meant for developers at this
 point.
 
@@ -40,15 +40,20 @@ point.
 | -------- | ------- | ---- |
 | Chrome  | macOS | Works |
 | Chrome  | Linux | Works in theory, untested |
-| Chrome  | Windows | Registry install work not yet done |
+| Chrome  | Windows | Installs, otherwise untested |
 | Firefox  | macOS | Mostly works |
 | Firefox  | Linux | Mostly works in theory, untested |
-| Firefox  | Windows | Registry install work not yet done |
+| Firefox  | Windows | Installs, otherwise untested |
 | Safari  | * | not possible; no support for Native Messaging |
 
 ## Developer instructions
 
 To log out, for now you need to remove & re-add the extension.
+
+On macOS and Linux, the `--install` step copies the built binary and a
+native messaging host manifest into the directory the browser scans. On
+Windows they go under `%LOCALAPPDATA%\Tailscale\BrowserExt` and a registry
+key under `HKEY_CURRENT_USER` points the browser at the manifest.
 
 ### Chrome
 
@@ -73,6 +78,20 @@ To log out, for now you need to remove & re-add the extension.
 8. Click the extension icon again and select "Log in".
 
 Temporary add-ons in Firefox are removed when the browser restarts, so you'll need to reload it from `about:debugging` each session.
+
+### Uninstalling the native backend
+
+To remove the binary and the registration for both browsers:
+
+```
+ts-browser-ext --uninstall
+```
+
+### Seeing the backend's logs
+
+The browser owns the backend's stdout, so its logs go nowhere by default.
+To watch them, run a TCP syslog listener and start the browser with
+`TS_BROWSER_EXT_SYSLOG=localhost:5555` set in its environment.
 
 ## End user instructions
 
