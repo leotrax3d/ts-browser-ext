@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/syslog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -81,7 +80,7 @@ To unregister it again:
 	// discards our stderr, so logs are invisible by default. Developers can
 	// point them at a syslog listener (e.g. "localhost:5555") instead.
 	if addr := *syslogFlag; addr != "" {
-		if w, err := syslog.Dial("tcp", addr, syslog.LOG_INFO, "browser"); err == nil {
+		if w, err := dialSyslog(addr); err == nil {
 			log.Printf("syslog dialed")
 			h.logf = func(f string, a ...any) {
 				fmt.Fprintf(w, f, a...)
@@ -105,7 +104,42 @@ To unregister it again:
 	h.logf("readMessage loop ended: %v", err)
 }
 
+// The native messaging host names, as used by both the manifest and the
+// browser-side connectNative call.
+const (
+	chromeHostName  = "com.tailscale.browserext.chrome"
+	firefoxHostName = "com.tailscale.browserext.firefox"
+)
+
+// hostName returns the native messaging host name for a browser byte.
+func hostName(browserByte string) (string, error) {
+	switch browserByte {
+	case "C":
+		return chromeHostName, nil
+	case "F":
+		return firefoxHostName, nil
+	}
+	return "", fmt.Errorf("unknown browser prefix byte %q", browserByte)
+}
+
+// targetBinName is what we call our copy of ourselves in the target directory.
+func targetBinName() string {
+	if runtime.GOOS == "windows" {
+		return "ts-browser-ext.exe"
+	}
+	return "ts-browser-ext"
+}
+
+// getTargetDir returns the directory to install the binary and the host
+// manifest into, creating it if needed.
+//
+// On macOS and Linux this is the per-user directory the browser scans for
+// native messaging hosts. Windows browsers find the manifest through the
+// registry instead (see registerHost), so there the location is ours to pick.
 func getTargetDir(browserByte string) (string, error) {
+	if _, err := hostName(browserByte); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -115,17 +149,27 @@ func getTargetDir(browserByte string) (string, error) {
 	case "linux":
 		if browserByte == "C" {
 			dir = filepath.Join(home, ".config", "google-chrome", "NativeMessagingHosts")
-		} else if browserByte == "F" {
+		} else {
 			dir = filepath.Join(home, ".mozilla", "native-messaging-hosts")
 		}
 	case "darwin":
 		if browserByte == "C" {
 			dir = filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts")
-		} else if browserByte == "F" {
+		} else {
 			dir = filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts")
 		}
+	case "windows":
+		base := os.Getenv("LOCALAPPDATA")
+		if base == "" {
+			base = filepath.Join(home, "AppData", "Local")
+		}
+		if browserByte == "C" {
+			dir = filepath.Join(base, "Tailscale", "BrowserExt", "Chrome")
+		} else {
+			dir = filepath.Join(base, "Tailscale", "BrowserExt", "Firefox")
+		}
 	default:
-		return "", fmt.Errorf("TODO: implement support for installing on %q", runtime.GOOS)
+		return "", fmt.Errorf("installing is not supported on %q", runtime.GOOS)
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
@@ -133,17 +177,29 @@ func getTargetDir(browserByte string) (string, error) {
 	return dir, nil
 }
 
+// getTargetJSON returns the path of the native messaging host manifest.
+func getTargetJSON(browserByte, targetDir string) (string, error) {
+	name, err := hostName(browserByte)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(targetDir, name+".json"), nil
+}
+
 func uninstall() error {
 	for _, browserByte := range []string{"C", "F"} {
+		if err := unregisterHost(browserByte); err != nil {
+			return err
+		}
 		targetDir, err := getTargetDir(browserByte)
 		if err != nil {
 			return err
 		}
-		targetBin := filepath.Join(targetDir, "ts-browser-ext")
-		targetJSON := filepath.Join(targetDir, "com.tailscale.browserext.chrome.json")
-		if browserByte == "F" {
-			targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
+		targetJSON, err := getTargetJSON(browserByte, targetDir)
+		if err != nil {
+			return err
 		}
+		targetBin := filepath.Join(targetDir, targetBinName())
 		if err := os.Remove(targetBin); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -179,47 +235,63 @@ func install(installArg string) error {
 	if err != nil {
 		return err
 	}
-	targetBin := filepath.Join(targetDir, "ts-browser-ext")
+	targetBin := filepath.Join(targetDir, targetBinName())
 	if err := os.WriteFile(targetBin, binary, 0755); err != nil {
 		return err
 	}
 	log.SetFlags(0)
 	log.Printf("copied binary to %v", targetBin)
 
-	var targetJSON string
-	var jsonConf []byte
-
+	name, err := hostName(browserByte)
+	if err != nil {
+		return err
+	}
+	targetJSON, err := getTargetJSON(browserByte, targetDir)
+	if err != nil {
+		return err
+	}
+	manifest := &hostManifest{
+		Name:        name,
+		Description: "Tailscale Browser Extension",
+		Path:        targetBin,
+		Type:        "stdio",
+	}
 	switch browserByte {
 	case "C":
-		targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.chrome.json")
-		jsonConf = fmt.Appendf(nil, `{
-		"name": "com.tailscale.browserext.chrome",
-		"description": "Tailscale Browser Extension",
-		"path": "%s",
-		"type": "stdio",
-		"allowed_origins": [
-			"chrome-extension://%s/"
-		]
-	  }`, targetBin, extension)
+		manifest.AllowedOrigins = []string{"chrome-extension://" + extension + "/"}
 	case "F":
-		targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
-		jsonConf = fmt.Appendf(nil, `{
-		"name": "com.tailscale.browserext.firefox",
-		"description": "Tailscale Browser Extension",
-		"path": "%s",
-		"type": "stdio",
-		"allowed_extensions": [
-			"browser-ext@tailscale.com"
-		]
-	  }`, targetBin)
-	default:
-		return fmt.Errorf("unknown browser prefix byte %q", browserByte)
+		manifest.AllowedExtensions = []string{firefoxExtensionID}
+	}
+	// Marshal rather than format the JSON: on Windows targetBin contains
+	// backslashes, which have to be escaped.
+	jsonConf, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
 	}
 	if err := os.WriteFile(targetJSON, jsonConf, 0644); err != nil {
 		return err
 	}
 	log.Printf("wrote registration to %v", targetJSON)
-	return nil
+
+	return registerHost(browserByte, targetJSON)
+}
+
+// firefoxExtensionID is the add-on ID from firefox/manifest.json. Unlike
+// Chrome, where the ID depends on how the extension was loaded, it is fixed.
+const firefoxExtensionID = "browser-ext@tailscale.com"
+
+// hostManifest is a native messaging host manifest, as documented at
+// https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging
+// and the Firefox equivalent. Chrome keys on the extension origin, Firefox on
+// the add-on ID, so exactly one of the two allowed_ lists is set.
+type hostManifest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Type        string `json:"type"`
+
+	AllowedOrigins    []string `json:"allowed_origins,omitempty"`
+	AllowedExtensions []string `json:"allowed_extensions,omitempty"`
 }
 
 type host struct {
