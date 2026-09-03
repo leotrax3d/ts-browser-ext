@@ -9,10 +9,13 @@
           "strict_min_version": "50.0"
         }
       },
+     "//permissions": "webRequest and webRequestBlocking let the extension answer the proxy's authentication challenge for the web client, which is reached over HTTP. SOCKS requests carry the credential in the ProxyInfo instead.",
      "permissions": [
         "proxy",
         "storage",
-        "nativeMessaging"
+        "nativeMessaging",
+        "webRequest",
+        "webRequestBlocking"
     ],
     "host_permissions": [
         "<all_urls>"

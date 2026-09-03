@@ -42,6 +42,7 @@ function disableProxy() {
   }
   proxyEnabled = false;
   lastProxyPort = 0;
+  proxyCredential = null;
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -135,6 +136,21 @@ function sendPopupStatus() {
   sendToPopup({ status: lastStatus });
 }
 
+// redactedMessage renders a backend message for the console with the proxy
+// password removed. The console is one copy-and-paste away from a bug report,
+// and the password is the one field in these messages that must not travel.
+function redactedMessage(message) {
+  if (!message || !message.procRunning || !message.procRunning.proxyPassword) {
+    return JSON.stringify(message);
+  }
+  const copy = Object.assign({}, message, {
+    procRunning: Object.assign({}, message.procRunning, {
+      proxyPassword: "[redacted]",
+    }),
+  });
+  return JSON.stringify(copy);
+}
+
 function sendToPopup(v) {
   if (popupPort) {
     popupPort.postMessage(v);
@@ -150,6 +166,7 @@ let portError = null;
 // them, and the two need opposite advice.
 let everConnected = false;
 let lastLogPath = ""; // where the backend says it is writing its log
+let proxyCredential = null; // what the backend requires to use its proxy
 let backendError = ""; // last error the backend reported, if any
 let versionMismatch = null; // set when the backend speaks a different protocol
 
@@ -183,7 +200,7 @@ function connectToNativeHost() {
     }
   });
   nmPort.onMessage.addListener((message) => {
-    console.log("got message: " + JSON.stringify(message));
+    console.log("got message: " + redactedMessage(message));
     if (deadPort) {
       console.log("connected to native backend");
       deadPort = false;
@@ -218,6 +235,11 @@ function connectToNativeHost() {
 
       if (message.procRunning.port) {
         backendError = "";
+        // Keep this before setProxy: proxyHandler reads it for every request.
+        proxyCredential = {
+          username: message.procRunning.proxyUsername || "",
+          password: message.procRunning.proxyPassword || "",
+        };
         setProxy(message.procRunning.port);
       } else if (message.procRunning.error) {
         backendError = message.procRunning.error;
@@ -278,11 +300,22 @@ function proxyHandler(port) {
 
     // we need to use http for 100.100.100.100
     if (url.hostname == '100.100.100.100') {
+      // No credential goes here: an HTTP proxy is challenged, and
+      // onAuthRequired below answers.
       return { type: "http", host: "127.0.0.1", port: port };
     }
 
-    // use socks for everything else
-    return { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true, bypassList: ["localhost", "127.*"] };
+    // use socks for everything else. SOCKS authenticates up front rather than
+    // by challenge, so the credential travels in the ProxyInfo.
+    return {
+      type: "socks",
+      host: "127.0.0.1",
+      port: port,
+      proxyDNS: true,
+      bypassList: ["localhost", "127.*"],
+      username: proxyCredential ? proxyCredential.username : undefined,
+      password: proxyCredential ? proxyCredential.password : undefined,
+    };
   }
 }
 
@@ -308,6 +341,27 @@ browser.storage.local.get("profileId").then((result) => {
     maybeSendInit();
   }
 });
+
+// The web client is reached through the HTTP half of the backend's proxy,
+// which challenges rather than taking credentials up front. Answer it, and
+// only for our own proxy: onAuthRequired also fires for websites and for
+// other proxies, and the credential must not go to either.
+browser.webRequest.onAuthRequired.addListener(
+  (details) => {
+    if (!details.isProxy) {
+      return {};
+    }
+    if (!proxyCredential || !lastProxyPort) {
+      return {};
+    }
+    if (details.challenger && details.challenger.port !== lastProxyPort) {
+      return {};
+    }
+    return { authCredentials: proxyCredential };
+  },
+  { urls: ["<all_urls>"] },
+  ["blocking"]
+);
 
 // Listener for messages from the popup
 browser.runtime.onMessage.addListener((message, sender) => {
