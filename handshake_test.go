@@ -28,7 +28,7 @@ const chromeExtensionID = "oejgagifdijhoenbjndjmdbgdddifeno"
 func TestChromeLaunchesBackend(t *testing.T) {
 	chrome := os.Getenv("TS_BROWSER_EXT_CHROME")
 	if chrome == "" {
-		t.Skip("set TS_BROWSER_EXT_CHROME to a Chrome binary to run the handshake test")
+		t.Skip("set TS_BROWSER_EXT_CHROME to a Chromium binary to run the handshake test")
 	}
 	if _, err := os.Stat(chrome); err != nil {
 		t.Fatalf("TS_BROWSER_EXT_CHROME=%q: %v", chrome, err)
@@ -103,9 +103,11 @@ func TestChromeLaunchesBackend(t *testing.T) {
 		"--user-data-dir="+userDataDir,
 		"--load-extension="+repoDir,
 		"--disable-extensions-except="+repoDir,
-		// Recent Google Chrome ignores --load-extension unless this is
-		// switched off. Chromium builds accept the flag either way.
-		"--disable-features=DisableLoadExtensionCommandLineSwitch",
+		// Branded Google Chrome rejects both of the switches above outright
+		// ("--disable-extensions-except is not allowed in Google Chrome,
+		// ignoring") and there is no flag that re-enables them, so this test
+		// has to be pointed at a Chromium build. Real users load the
+		// extension from the Extensions page, which is unaffected.
 		// Puts the extension's console output, and the browser's own
 		// complaints about native messaging, where this test can quote them.
 		"--enable-logging=stderr",
