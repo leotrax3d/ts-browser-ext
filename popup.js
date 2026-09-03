@@ -1,11 +1,5 @@
 var lastStatus;
 
-function browseToURL() {
-  if (lastStatus && lastStatus.browseToURL) {
-    chrome.tabs.create({ url: lastStatus.browseToURL });
-  }
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   const toggleSlider = document.getElementById("toggleSlider");
   const slider = document.querySelector(".slider");
@@ -33,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateStatus(status) {
     isLoading = false;
+    lastStatus = status;
     hasReceivedInitialState = true;
     if (status.error) {
       if (status.error === "State: Stopped") {
@@ -84,6 +79,17 @@ document.addEventListener("DOMContentLoaded", () => {
     if (msg.status) {
       console.log("Received status update:", msg.status);
       updateStatus(msg.status);
+    }
+  });
+
+  stateDisplay.addEventListener("click", (e) => {
+    const link = e.target.closest("a[href='#login']");
+    if (!link) {
+      return;
+    }
+    e.preventDefault();
+    if (lastStatus && lastStatus.browseToURL) {
+      chrome.tabs.create({ url: lastStatus.browseToURL });
     }
   });
 
