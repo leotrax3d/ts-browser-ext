@@ -43,8 +43,10 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      # -v so the log names the tests that ran on each OS: the Windows-only
+      # registry coverage is selected by build tag and otherwise invisible.
       - name: test
-        run: go test ./...
+        run: go test -v ./...
 
   js:
     name: js syntax
