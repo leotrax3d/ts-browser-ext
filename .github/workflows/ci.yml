@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push supersedes whatever is still running for the same ref; there is no
+# point burning three OS runners on a commit nobody is waiting for any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
     # Run on each real OS rather than cross-compiling: the install path is
