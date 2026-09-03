@@ -51,6 +51,17 @@ jobs:
 
       # -v so the log names the tests that ran on each OS: the Windows-only
       # registry coverage is selected by build tag and otherwise invisible.
+      # The handshake test needs a real browser. Chrome ships on the Linux and
+      # Windows images; the macOS image has none, so the test skips there.
+      - name: locate chrome (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "TS_BROWSER_EXT_CHROME=/usr/bin/google-chrome" >> "$GITHUB_ENV"
+
+      - name: locate chrome (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: echo "TS_BROWSER_EXT_CHROME=C:\Program Files\Google\Chrome\Application\chrome.exe" >> $env:GITHUB_ENV
+
       - name: test
         run: go test -v ./...
 
