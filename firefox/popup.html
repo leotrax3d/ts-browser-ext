@@ -311,11 +311,18 @@
           ></path>
         </svg>
       </div>
-      <div class="slider-container">
-        <input type="checkbox" id="toggleSlider" class="slider" checked />
-      </div>
+      <label class="slider-container">
+        <input
+          type="checkbox"
+          id="toggleSlider"
+          class="slider-input"
+          style="display: none"
+          checked
+        />
+        <span class="slider connected no-transition"></span>
+      </label>
     </div>
-    <div id="state">Disconnected</div>
+    <div id="state" class="status"></div>
     <div class="controls">
       <button id="settingsButton" class="settings-button">Settings</button>
     </div>

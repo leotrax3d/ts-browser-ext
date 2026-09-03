@@ -248,6 +248,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       console.log("bg: Disabling proxy");
       disableProxy();
     }
+    setPopupIcon(proxyEnabled);
     return Promise.resolve({ status: lastStatus });
   }
 });

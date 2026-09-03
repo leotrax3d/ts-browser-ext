@@ -82,15 +82,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // Links in the status area open in a tab; navigating the popup itself would
+  // just replace the extension UI. "#login" stands in for the login URL, which
+  // is only known once a status arrives.
   stateDisplay.addEventListener("click", (e) => {
-    const link = e.target.closest("a[href='#login']");
+    const link = e.target.closest("a");
     if (!link) {
       return;
     }
-    e.preventDefault();
-    if (lastStatus && lastStatus.browseToURL) {
-      chrome.tabs.create({ url: lastStatus.browseToURL });
+    const href = link.getAttribute("href");
+    const url =
+      href === "#login" ? lastStatus && lastStatus.browseToURL : href;
+    if (!url || !/^https?:\/\//.test(url)) {
+      return;
     }
+    e.preventDefault();
+    chrome.tabs.create({ url });
   });
 
   toggleSlider.addEventListener("change", () => {
