@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,6 +39,18 @@ func TestChromeLaunchesBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The backend has to be the real program, not this test binary. Build it
+	// before redirecting HOME below: with HOME moved, the build populates a
+	// fresh module cache inside the scratch directory, which is slow and
+	// which the test framework then cannot delete, since module cache files
+	// are read-only.
+	backend := filepath.Join(t.TempDir(), targetBinName())
+	build := exec.Command("go", "build", "-o", backend, ".")
+	build.Dir = repoDir
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the backend: %v\n%s", err, out)
+	}
+
 	// Point the install and the log directory at scratch space. Chrome
 	// inherits this environment, and so does the backend Chrome launches,
 	// so all three agree on where things go.
@@ -45,14 +59,6 @@ func TestChromeLaunchesBackend(t *testing.T) {
 	t.Setenv("USERPROFILE", scratch)
 	t.Setenv("LOCALAPPDATA", scratch)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(scratch, "cache"))
-
-	// The backend has to be the real program, not this test binary.
-	backend := filepath.Join(scratch, targetBinName())
-	build := exec.Command("go", "build", "-o", backend, ".")
-	build.Dir = repoDir
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the backend: %v\n%s", err, out)
-	}
 
 	if err := installFrom(backend, "C"+chromeExtensionID); err != nil {
 		t.Fatalf("installing the native messaging host: %v", err)
@@ -97,8 +103,19 @@ func TestChromeLaunchesBackend(t *testing.T) {
 		"--user-data-dir="+userDataDir,
 		"--load-extension="+repoDir,
 		"--disable-extensions-except="+repoDir,
+		// Recent Google Chrome ignores --load-extension unless this is
+		// switched off. Chromium builds accept the flag either way.
+		"--disable-features=DisableLoadExtensionCommandLineSwitch",
+		// Puts the extension's console output, and the browser's own
+		// complaints about native messaging, where this test can quote them.
+		"--enable-logging=stderr",
 		"about:blank",
 	)
+	// Without this a failure says only that nothing happened, which is the
+	// least useful thing it could say.
+	var browserOut lockedBuffer
+	cmd.Stdout = &browserOut
+	cmd.Stderr = &browserOut
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting Chrome: %v", err)
 	}
@@ -133,7 +150,54 @@ func TestChromeLaunchesBackend(t *testing.T) {
 			t.Errorf("backend log never contained %q", w)
 		}
 	}
-	t.Fatalf("handshake did not complete within the deadline. log %v:\n%s", logPath, firstLines(last, 40))
+	t.Fatalf("handshake did not complete within the deadline.\n"+
+		"backend log %v:\n%s\n\nbrowser said:\n%s",
+		logPath, firstLines(last, 20), interestingLines(browserOut.String(), 25))
+}
+
+// lockedBuffer collects the browser's output, which arrives on a goroutine
+// the test also reads from when reporting a failure.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// interestingLines picks the browser output worth reading: what the extension
+// logged and what the browser said about extensions or native messaging. The
+// rest is startup noise about graphics and D-Bus.
+func interestingLines(s string, max int) string {
+	var keep []string
+	for _, line := range strings.Split(s, "\n") {
+		switch {
+		case strings.Contains(line, "CONSOLE"),
+			strings.Contains(line, "native messaging"),
+			strings.Contains(line, "Native"),
+			strings.Contains(line, "extension"),
+			strings.Contains(line, "Extension"):
+			keep = append(keep, line)
+		}
+		if len(keep) >= max {
+			keep = append(keep, "...")
+			break
+		}
+	}
+	if len(keep) == 0 {
+		return "(nothing about extensions in the browser output; " +
+			"it may not have started at all)"
+	}
+	return strings.Join(keep, "\n")
 }
 
 func containsAll(s string, subs []string) bool {
