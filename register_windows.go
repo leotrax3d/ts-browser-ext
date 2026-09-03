@@ -3,11 +3,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// registryPrefix is the path under HKEY_CURRENT_USER below which browsers look
+// for their native messaging host keys. Tests point it at a scratch subtree so
+// they don't disturb a real browser's registration on the machine.
+var registryPrefix = `Software`
 
 // registryKeyPath returns the HKCU key a browser reads to discover native
 // messaging hosts. Unlike macOS and Linux, Windows browsers don't scan a
@@ -15,9 +21,9 @@ import (
 func registryKeyPath(browserByte string) (string, error) {
 	switch browserByte {
 	case "C":
-		return `Software\Google\Chrome\NativeMessagingHosts\` + chromeHostName, nil
+		return registryPrefix + `\Google\Chrome\NativeMessagingHosts\` + chromeHostName, nil
 	case "F":
-		return `Software\Mozilla\NativeMessagingHosts\` + firefoxHostName, nil
+		return registryPrefix + `\Mozilla\NativeMessagingHosts\` + firefoxHostName, nil
 	}
 	return "", fmt.Errorf("unknown browser prefix byte %q", browserByte)
 }
@@ -50,7 +56,7 @@ func unregisterHost(browserByte string) error {
 		return err
 	}
 	if err := registry.DeleteKey(registry.CURRENT_USER, path); err != nil {
-		if err == registry.ErrNotExist {
+		if errors.Is(err, registry.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("deleting registry key HKCU\\%s: %w", path, err)

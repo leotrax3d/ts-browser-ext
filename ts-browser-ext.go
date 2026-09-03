@@ -238,15 +238,22 @@ func parseInstallArg(installArg string) (browserByte, extension string, err erro
 }
 
 func install(installArg string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return installFrom(exe, installArg)
+}
+
+// installFrom registers the browser extension, copying the backend binary from
+// exe. install passes the running executable; tests pass a stand-in, so the
+// installation can be exercised without copying a large binary around.
+func installFrom(exe, installArg string) error {
 	browserByte, extension, err := parseInstallArg(installArg)
 	if err != nil {
 		return err
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	targetDir, err := getTargetDir(browserByte)
 	if err != nil {
 		return err
@@ -355,6 +362,19 @@ func newHost(r io.Reader, w io.Writer) *host {
 }
 
 const maxMsgSize = 1 << 20
+
+// maxLogPreview bounds how much of a message body reaches the log. Messages
+// run up to [maxMsgSize], and a megabyte on a single line is more than a log
+// file or a CI log viewer should have to swallow to tell you what happened.
+const maxLogPreview = 1024
+
+// logPreview returns b for logging, shortened if it is unreasonably long.
+func logPreview(b []byte) string {
+	if len(b) <= maxLogPreview {
+		return string(b)
+	}
+	return fmt.Sprintf("%s... (%d bytes total)", b[:maxLogPreview], len(b))
+}
 
 func (h *host) readMessages() error {
 	for {
@@ -548,7 +568,7 @@ func (h *host) send(msg *reply) error {
 	if err != nil {
 		return fmt.Errorf("json encoding of message: %w", err)
 	}
-	h.logf("sent reply: %s", msgb)
+	h.logf("sent reply: %s", logPreview(msgb))
 	return h.writeFramed(msgb)
 }
 

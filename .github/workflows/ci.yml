@@ -8,14 +8,23 @@ on:
 permissions:
   contents: read
 
+# A new push supersedes whatever is still running for the same ref; there is no
+# point burning three OS runners on a commit nobody is waiting for any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
-    name: go (${{ matrix.goos }})
-    runs-on: ubuntu-latest
+    # Run on each real OS rather than cross-compiling: the install path is
+    # platform-specific (directory layout on Linux and macOS, the registry on
+    # Windows) and only executes on the platform it targets.
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin, windows]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,7 +33,8 @@ jobs:
           cache: true
 
       - name: gofmt
-        if: matrix.goos == 'linux'
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
           out=$(gofmt -l .)
           if [ -n "$out" ]; then
@@ -35,18 +45,14 @@ jobs:
 
       - name: build
         run: go build ./...
-        env:
-          GOOS: ${{ matrix.goos }}
 
       - name: vet
         run: go vet ./...
-        env:
-          GOOS: ${{ matrix.goos }}
 
-      # The tests are pure Go, so they only need to run on the host platform.
+      # -v so the log names the tests that ran on each OS: the Windows-only
+      # registry coverage is selected by build tag and otherwise invisible.
       - name: test
-        if: matrix.goos == 'linux'
-        run: go test ./...
+        run: go test -v ./...
 
   js:
     name: js syntax
