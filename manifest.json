@@ -5,11 +5,14 @@
     "name": "Tailscale Extension",
     "version": "1.0",
     "description": "A Tailscale client that runs as a browser extension, permitting use of different tailnets in different browser profiles, without affecting the system VPN or networking settings.",
+    "//permissions": "webRequest and webRequestAuthProvider let the extension answer the proxy's authentication challenge. Without them the local proxy would have to accept anyone, which would let every process on the machine reach the tailnet.",
     "permissions": [
         "proxy",
         "background",
         "storage",
-        "nativeMessaging"
+        "nativeMessaging",
+        "webRequest",
+        "webRequestAuthProvider"
     ],
     "host_permissions": [
         "<all_urls>"

@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -75,7 +78,10 @@ To unregister it again:
 
 	hostinfo.SetApp("ts-browser-ext")
 
-	h := newHost(os.Stdin, os.Stdout)
+	h, err := newHost(os.Stdin, os.Stdout)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 	logPath := setupLogging()
 	h.logf("ts-browser-ext starting, pid %v", os.Getpid())
 
@@ -102,6 +108,8 @@ To unregister it again:
 		LogPath:         logPath,
 		ProtocolVersion: protocolVersion,
 		Version:         backendVersion(),
+		ProxyUsername:   h.cred.Username,
+		ProxyPassword:   h.cred.Password,
 	}})
 	h.logf("Starting readMessages loop")
 	err = h.readMessages()
@@ -114,6 +122,58 @@ const (
 	maxLogSize = 2 << 20
 	keepLogs   = 3
 )
+
+// proxyCredential is the username and password the browser must present to
+// use the local proxy.
+//
+// Without it the proxy is reachable by every process on the machine, and on a
+// multi-user machine by every logged-in user, each of whom would get a way
+// into the tailnet that the extension's owner never granted. Loopback is not
+// a boundary. The credential is generated per run and travels to the
+// extension over the native messaging pipe, which the browser keeps to
+// itself.
+type proxyCredential struct {
+	Username string
+	Password string
+}
+
+// newProxyCredential mints a credential for this run of the backend.
+func newProxyCredential() (*proxyCredential, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, fmt.Errorf("generating proxy credential: %w", err)
+	}
+	return &proxyCredential{
+		Username: "ts-browser-ext",
+		Password: base64.RawURLEncoding.EncodeToString(b[:]),
+	}, nil
+}
+
+// authorizes reports whether user and pass match, in constant time so a
+// caller cannot learn the password one byte at a time.
+func (c *proxyCredential) authorizes(user, pass string) bool {
+	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(c.Username)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(c.Password)) == 1
+	return userOK && passOK
+}
+
+// authorizesHeader reports whether a Proxy-Authorization header value carries
+// this credential.
+func (c *proxyCredential) authorizesHeader(header string) bool {
+	const prefix = "Basic "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(header[len(prefix):])
+	if err != nil {
+		return false
+	}
+	user, pass, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return false
+	}
+	return c.authorizes(user, pass)
+}
 
 // protocolVersion is the version of the native messaging protocol this backend
 // speaks, reported to the extension on connect so it can compare.
@@ -489,14 +549,20 @@ type host struct {
 	ln              net.Listener
 	wantUp          bool
 	fatalErr        string // non-empty once the proxy has stopped serving
+	cred            *proxyCredential
 	// ...
 }
 
-func newHost(r io.Reader, w io.Writer) *host {
+func newHost(r io.Reader, w io.Writer) (*host, error) {
+	cred, err := newProxyCredential()
+	if err != nil {
+		return nil, err
+	}
 	h := &host{
 		br:   bufio.NewReaderSize(r, 1<<20),
 		w:    w,
 		logf: log.Printf,
+		cred: cred,
 	}
 	h.ts = &tsnet.Server{
 		RunWebClient: true,
@@ -506,7 +572,7 @@ func newHost(r io.Reader, w io.Writer) *host {
 			h.logf(f, a...)
 		},
 	}
-	return h
+	return h, nil
 }
 
 const maxMsgSize = 1 << 20
@@ -515,6 +581,16 @@ const maxMsgSize = 1 << 20
 // run up to [maxMsgSize], and a megabyte on a single line is more than a log
 // file or a CI log viewer should have to swallow to tell you what happened.
 const maxLogPreview = 1024
+
+// proxyPasswordRE matches the proxy password in a marshalled message.
+var proxyPasswordRE = regexp.MustCompile(`("proxyPassword":")[^"]*(")`)
+
+// redactSecrets removes the proxy password from a message about to be logged.
+// The log exists to be attached to bug reports, and the credential is the one
+// thing in it that must not travel.
+func redactSecrets(msgb []byte) []byte {
+	return proxyPasswordRE.ReplaceAll(msgb, []byte("${1}[redacted]${2}"))
+}
 
 // logPreview returns b for logging, shortened if it is unreasonably long.
 func logPreview(b []byte) string {
@@ -716,7 +792,7 @@ func (h *host) send(msg *reply) error {
 	if err != nil {
 		return fmt.Errorf("json encoding of message: %w", err)
 	}
-	h.logf("sent reply: %s", logPreview(msgb))
+	h.logf("sent reply: %s", logPreview(redactSecrets(msgb)))
 	return h.writeFramed(msgb)
 }
 
@@ -761,8 +837,10 @@ func (h *host) getProxyListenerLocked() (net.Listener, error) {
 		h.proxyDied("HTTP proxy", hs.Serve(httpListener))
 	}()
 	ss := &socks5.Server{
-		Logf:   logger.WithPrefix(h.logf, "socks5: "),
-		Dialer: h.userDial,
+		Logf:     logger.WithPrefix(h.logf, "socks5: "),
+		Dialer:   h.userDial,
+		Username: h.cred.Username,
+		Password: h.cred.Password,
 	}
 	go func() {
 		h.proxyDied("SOCKS5 server", ss.Serve(socksListener))
@@ -782,6 +860,13 @@ func (h *host) proxyDied(what string, err error) {
 	}
 	h.mu.Unlock()
 	h.sendStatus()
+}
+
+// webServer returns the web client server, or nil if init has not run yet.
+func (h *host) webServer() *web.Server {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ws
 }
 
 func (h *host) userDial(ctx context.Context, netw, addr string) (net.Conn, error) {
@@ -875,6 +960,12 @@ type procRunningResult struct {
 	// against its own.
 	ProtocolVersion int `json:"protocolVersion"`
 
+	// ProxyUsername and ProxyPassword are what the browser must present to
+	// use the proxy on Port. They are minted per run and only ever travel
+	// over the native messaging pipe.
+	ProxyUsername string `json:"proxyUsername,omitempty"`
+	ProxyPassword string `json:"proxyPassword,omitempty"`
+
 	// Version describes this build, for the popup and for bug reports. It is
 	// not what the version check uses.
 	Version string `json:"version,omitempty"`
@@ -924,8 +1015,29 @@ func (h *host) httpProxyHandler() http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Before anything else, including the web client below: an
+		// unauthenticated caller must not reach the tailnet, nor the login
+		// UI, nor learn anything about what is running here.
+		if !h.cred.authorizesHeader(r.Header.Get("Proxy-Authorization")) {
+			w.Header().Set("Proxy-Authenticate", `Basic realm="Tailscale browser extension"`)
+			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+			return
+		}
+		// Don't pass our own credential on to whatever we are proxying to.
+		r.Header.Del("Proxy-Authorization")
+
 		if r.Host == "100.100.100.100" {
-			h.ws.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
+			// The listener is up from process start, but the web client only
+			// exists once the extension has sent init. A request in between
+			// used to dereference a nil server and drop the connection with
+			// no explanation.
+			ws := h.webServer()
+			if ws == nil {
+				http.Error(w, "the Tailscale backend has not been initialized yet",
+					http.StatusServiceUnavailable)
+				return
+			}
+			ws.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
 			return
 		}
 

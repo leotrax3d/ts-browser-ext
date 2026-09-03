@@ -134,8 +134,7 @@ func TestMessageRoundTrip(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	w := newHost(strings.NewReader(""), &buf)
-	w.logf = t.Logf
+	w := newTestHost(t, strings.NewReader(""), &buf)
 	if err := w.writeFramed(wantJSON); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +142,7 @@ func TestMessageRoundTrip(t *testing.T) {
 		t.Errorf("framed length %v, want %v", got, want)
 	}
 
-	r := newHost(bytes.NewReader(buf.Bytes()), io.Discard)
-	r.logf = t.Logf
+	r := newTestHost(t, bytes.NewReader(buf.Bytes()), io.Discard)
 	got, err := r.readMessage()
 	if err != nil {
 		t.Fatalf("readMessage: %v", err)
@@ -158,8 +156,7 @@ func TestMessageRoundTrip(t *testing.T) {
 // halves of the protocol agree.
 func TestSendFraming(t *testing.T) {
 	var buf bytes.Buffer
-	h := newHost(strings.NewReader(""), &buf)
-	h.logf = t.Logf
+	h := newTestHost(t, strings.NewReader(""), &buf)
 	if err := h.send(&reply{Status: &status{Running: true, Tailnet: "example.com"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +183,7 @@ func TestSendFraming(t *testing.T) {
 func TestReadMessageTooBig(t *testing.T) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xff, 0xff, 0xff, 0xff})
-	h := newHost(bytes.NewReader(buf.Bytes()), io.Discard)
-	h.logf = t.Logf
+	h := newTestHost(t, bytes.NewReader(buf.Bytes()), io.Discard)
 	if _, err := h.readMessage(); err == nil {
 		t.Fatal("readMessage accepted a 4GiB message")
 	}
@@ -196,9 +192,19 @@ func TestReadMessageTooBig(t *testing.T) {
 // TestSendTooBig checks we don't try to frame a message the browser would
 // reject anyway.
 func TestSendTooBig(t *testing.T) {
-	h := newHost(strings.NewReader(""), io.Discard)
-	h.logf = t.Logf
+	h := newTestHost(t, strings.NewReader(""), io.Discard)
 	if err := h.send(&reply{Status: &status{Tailnet: strings.Repeat("x", maxMsgSize+1)}}); err == nil {
 		t.Fatal("send accepted an over-sized message")
 	}
+}
+
+// newTestHost builds a host for tests, failing the test rather than returning
+// the credential error every caller would only pass along.
+func newTestHost(t *testing.T, r io.Reader, w io.Writer) *host {
+	t.Helper()
+	h, err := newHost(r, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
 }

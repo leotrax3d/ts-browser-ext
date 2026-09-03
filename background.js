@@ -47,6 +47,7 @@ function disableProxy() {
   }
   proxyEnabled = false;
   lastProxyPort = 0;
+  proxyCredential = null;
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -131,6 +132,21 @@ function sendPopupStatus() {
   sendToPopup({ status: lastStatus });
 }
 
+// redactedMessage renders a backend message for the console with the proxy
+// password removed. The console is one copy-and-paste away from a bug report,
+// and the password is the one field in these messages that must not travel.
+function redactedMessage(message) {
+  if (!message || !message.procRunning || !message.procRunning.proxyPassword) {
+    return JSON.stringify(message);
+  }
+  const copy = Object.assign({}, message, {
+    procRunning: Object.assign({}, message.procRunning, {
+      proxyPassword: "[redacted]",
+    }),
+  });
+  return JSON.stringify(copy);
+}
+
 function sendToPopup(v) {
   if (popupPort) {
     popupPort.postMessage(v);
@@ -146,6 +162,7 @@ let portError = null;
 // them, and the two need opposite advice.
 let everConnected = false;
 let lastLogPath = ""; // where the backend says it is writing its log
+let proxyCredential = null; // what the backend requires to use its proxy
 let backendError = ""; // last error the backend reported, if any
 let versionMismatch = null; // set when the backend speaks a different protocol
 
@@ -179,7 +196,7 @@ function connectToNativeHost() {
     }
   });
   nmPort.onMessage.addListener((message) => {
-    console.log("got message: " + JSON.stringify(message));
+    console.log("got message: " + redactedMessage(message));
     if (deadPort) {
       console.log("connected to native backend");
       deadPort = false;
@@ -214,6 +231,12 @@ function connectToNativeHost() {
 
       if (message.procRunning.port) {
         backendError = "";
+        // Keep this before setProxy: once the proxy is in use the browser may
+        // be challenged immediately, and the listener below needs it.
+        proxyCredential = {
+          username: message.procRunning.proxyUsername || "",
+          password: message.procRunning.proxyPassword || "",
+        };
         setProxy(message.procRunning.port);
       } else if (message.procRunning.error) {
         backendError = message.procRunning.error;
@@ -306,6 +329,28 @@ chrome.storage.local.get("profileId", (result) => {
     maybeSendInit();
   }
 });
+
+// The backend's proxy demands a credential, so that no other process on this
+// machine can use it to reach the tailnet. Supply it when challenged, and
+// only to the backend's own proxy: onAuthRequired also fires for servers and
+// for proxies that are not ours, and handing the credential to any of those
+// would give away the thing it protects.
+chrome.webRequest.onAuthRequired.addListener(
+  (details) => {
+    if (!details.isProxy) {
+      return {}; // a website asking for a password; not ours to answer
+    }
+    if (!proxyCredential || !lastProxyPort) {
+      return {};
+    }
+    if (details.challenger && details.challenger.port !== lastProxyPort) {
+      return {};
+    }
+    return { authCredentials: proxyCredential };
+  },
+  { urls: ["<all_urls>"] },
+  ["blocking"]
+);
 
 // Listener for messages from the popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
