@@ -38,6 +38,7 @@ import (
 var (
 	installFlag   = flag.String("install", "", "register the browser extension; string is 'C' (Chrome) or 'F' (Firefox) followed by extension ID")
 	uninstallFlag = flag.Bool("uninstall", false, "unregister the browser extension")
+	syslogFlag    = flag.String("syslog", os.Getenv("TS_BROWSER_EXT_SYSLOG"), "if non-empty, host:port of a TCP syslog listener to send logs to, for debugging; defaults to $TS_BROWSER_EXT_SYSLOG")
 )
 
 func main() {
@@ -57,11 +58,17 @@ func main() {
 
 	if flag.NArg() == 0 {
 		fmt.Printf(`ts-browser-ext is the backend for the Tailscale browser extension,
-running as a child process HTTP/SOCKS5 under your browser.
+running as a child process HTTP/SOCKS5 proxy under your browser.
 
-To register it once, run:
+It is normally started by the browser, not by hand. To register it once,
+run the command the extension's popup prints, which looks like:
 
-     $ ts-browser-ext --install=chrome
+     $ ts-browser-ext --install=C<chrome-extension-id>   # Chrome
+     $ ts-browser-ext --install=F                        # Firefox
+
+To unregister it again:
+
+     $ ts-browser-ext --uninstall
 `)
 		return
 	}
@@ -70,14 +77,19 @@ To register it once, run:
 
 	h := newHost(os.Stdin, os.Stdout)
 
-	if w, err := syslog.Dial("tcp", "localhost:5555", syslog.LOG_INFO, "browser"); err == nil {
-		log.Printf("syslog dialed")
-		h.logf = func(f string, a ...any) {
-			fmt.Fprintf(w, f, a...)
+	// The browser owns our stdout (it's the native messaging channel) and
+	// discards our stderr, so logs are invisible by default. Developers can
+	// point them at a syslog listener (e.g. "localhost:5555") instead.
+	if addr := *syslogFlag; addr != "" {
+		if w, err := syslog.Dial("tcp", addr, syslog.LOG_INFO, "browser"); err == nil {
+			log.Printf("syslog dialed")
+			h.logf = func(f string, a ...any) {
+				fmt.Fprintf(w, f, a...)
+			}
+			log.SetOutput(w)
+		} else {
+			log.Printf("syslog: %v", err)
 		}
-		log.SetOutput(w)
-	} else {
-		log.Printf("syslog: %v", err)
 	}
 
 	ln := h.getProxyListener()
